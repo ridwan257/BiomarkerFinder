@@ -4,6 +4,8 @@ from sklearn.metrics import confusion_matrix, f1_score, precision_recall_curve, 
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import LeaveOneOut
 from joblib import Parallel, delayed, dump, load
+import matplotlib.pyplot as plt
+import numbers
 
 def echo():
     print("Hellow Babe How are you?")
@@ -35,6 +37,25 @@ def pr_auc(y_true, y_proba):
     pr_auc = auc(recall, precision)
     return pr_auc
 
+## ========================================================================
+## ----------------------------- SOME PLOTING -----------------------------
+## ========================================================================
+def errorPlot(score_array, axis=0, vline=None, ddof=1):
+    n = score_array.shape[1] if axis==0 else score_array.shape[0]
+
+    if vline is not None:
+        if isinstance(vline, numbers.Number):
+            plt.axvline(vline, ls='--', alpha=0.8, c='black')
+        else:
+            for v in vline:
+                plt.axvline(v, ls='--', alpha=0.8, c='black')
+
+    plt.errorbar(
+        x = range(n),
+        y = score_array.mean(axis=axis), yerr=score_array.std(axis=axis, ddof=ddof),
+        fmt='o', ecolor='red', alpha=0.4, capsize=3
+    )
+    plt.plot(range(n), score_array.mean(axis=axis), c='blue')
 
 ## ========================================================================
 ## ----------------------- BOOTSTRAP RESAMPLING ----------------------
@@ -128,10 +149,13 @@ def evaluateBootstrapParallel(X, y, feature_indices, model, n_boot=100, metric=f
     
 
     
-def evaluateBootstrap(X, y, feature_indices, model, n_boot=100, metric=f1_score, use_proba=False, seed=None, verbose=0):
-    X_subset = X[:, feature_indices]
+def evaluateBootstrap(X, y, model, feature_indices=None, n_boot=100, metric=f1_score, use_proba=False, seed=None, verbose=0):
     rnd = np.random.default_rng(seed)
-
+    if feature_indices is None:
+        X_subset = X.copy()
+    else:
+        X_subset = X[:, feature_indices]
+    
     boot_scores = np.zeros(n_boot)
     oob_scores = np.zeros(n_boot)
 

@@ -91,14 +91,14 @@ class Agent:
         # Ensuring VALID chromosome
         self.make_valid(rnd_engine)
 
-    def calculate_boot_fitness(self, X, y, model, k, w1, w2, w3, n_jobs):
+    def calculate_boot_fitness(self, X, y, model, k, w1, w2, w3, n_jobs, seed=None):
         ## objective function 1
         fn1 = 1 - self.chr.sum() / self.length
 
         ## Bootstrap Score Collection
         if n_jobs == 1:
             boot_scores, oob_scores = rt.evaluateBootstrap(
-                X, y, self.chr, model, n_boot=100, seed=None, metric=rt.pr_auc, use_proba=True
+                X, y, model, feature_indices=self.chr, n_boot=100, seed=seed, metric=rt.pr_auc, use_proba=True
             )
         else:
             boot_scores, oob_scores = rt.evaluateBootstrapParallel(X, y, self.chr, model, n_boot=100, n_jobs=n_jobs)
@@ -230,7 +230,8 @@ class GeneticModel:
                 self.X, self.y,
                 self.model,
                 self.kappa, w1, w2, w3,
-                self.n_jobs
+                self.n_jobs, 
+                seed=self.rnd_engine.integers(0, 2**30)
             )
             # fitness_score = pop.calculate_loo_fitnes(
             #     self.X, self.y,
