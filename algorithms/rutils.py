@@ -1,12 +1,18 @@
+from os import cpu_count
 import numpy as np
 from collections import defaultdict
 from sklearn.metrics import confusion_matrix, f1_score, precision_recall_curve, auc
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import LeaveOneOut
+from sklearn.ensemble import RandomForestClassifier
 from joblib import Parallel, delayed, dump, load
 import matplotlib.pyplot as plt
 import numbers
 
+
+## ----------------
+TOTAL_AVAIABLE_CPU = cpu_count()
+## ----------------
 def echo():
     print("Hellow Babe How are you?")
 
@@ -40,8 +46,11 @@ def pr_auc(y_true, y_proba):
 ## ========================================================================
 ## ----------------------------- SOME PLOTING -----------------------------
 ## ========================================================================
-def errorPlot(score_array, axis=0, vline=None, ddof=1):
+def errorPlot(score_array, axis=0, vline=None, ddof=1, figsize=None):
     n = score_array.shape[1] if axis==0 else score_array.shape[0]
+
+    if figsize is not None:
+        plt.figure(figsize=figsize)
 
     if vline is not None:
         if isinstance(vline, numbers.Number):
@@ -60,7 +69,7 @@ def errorPlot(score_array, axis=0, vline=None, ddof=1):
 ## ========================================================================
 ## ----------------------- BOOTSTRAP RESAMPLING ----------------------
 ## ========================================================================
-def bootstrap_resample(X, y, shuffle=True, rnd_engine=None, oob=True, max_iters=100):
+def bootstrap_resample(X, y, shuffle=True, rnd_engine=None, oob=True, max_iters=100, get_index=False):
     if rnd_engine is None:
         rnd_engine = np.random.default_rng()
 
@@ -94,13 +103,20 @@ def bootstrap_resample(X, y, shuffle=True, rnd_engine=None, oob=True, max_iters=
     if shuffle:
         rnd_engine.shuffle(bootstrap_index_list)
 
+    if get_index:
+        return bootstrap_index_list, oob_sample_list
     # Create bootstrap and OOB sets
     Xboot, yboot = X[bootstrap_index_list].copy(), y[bootstrap_index_list].copy()
     Xoob, yoob = X[oob_sample_list].copy(), y[oob_sample_list].copy()
 
     return Xboot, Xoob, yboot, yoob
 
-
+def bootstrapGenerator(y, n_boot=100, shuffle=True, seed=None):
+    rnd_engine = set_seed(seed)
+    for _ in range(n_boot):
+        yield bootstrap_resample(
+            None, y, shuffle=shuffle, rnd_engine=rnd_engine, get_index=True
+        )
 
 ## ========================================================================
 ## ----------------------- BOOTSTRAP CROSSVALIDATION ----------------------
@@ -133,8 +149,16 @@ def __each_iteration(X, y, model, metric, use_proba, seeds, i):
 
     return boot_score, oob_score
 
-def evaluateBootstrapParallel(X, y, feature_indices, model, n_boot=100, metric=f1_score, use_proba=False, seed=None, n_jobs=3):
-    X_subset = X[:, feature_indices]
+def evaluateBootstrapParallel(
+        X, y, model, feature_indices=None, n_boot=100, metric=f1_score, use_proba=False, 
+        seed=None, n_jobs=3
+):
+    if feature_indices is None:
+        X_subset = X.copy()
+    elif isinstance(feature_indices, int):
+        X_subset = X[:, [feature_indices]]
+    else:
+        X_subset = X[:, feature_indices]
 
     rnd = np.random.default_rng(seed)
     random_seeds = rnd.integers(low=0, high=2**31, size=n_boot)
@@ -149,20 +173,27 @@ def evaluateBootstrapParallel(X, y, feature_indices, model, n_boot=100, metric=f
     
 
     
-def evaluateBootstrap(X, y, model, feature_indices=None, n_boot=100, metric=f1_score, use_proba=False, seed=None, verbose=0):
+def evaluateBootstrap(
+    X, y, model, feature_indices=None, n_boot=100, metric=f1_score, use_proba=False, 
+    seed=None, boot_score=False, verbose=0
+):
     rnd = np.random.default_rng(seed)
     if feature_indices is None:
         X_subset = X.copy()
+    elif isinstance(feature_indices, int):
+        X_subset = X[:, [feature_indices]]
     else:
         X_subset = X[:, feature_indices]
     
     boot_scores = np.zeros(n_boot)
     oob_scores = np.zeros(n_boot)
 
+    scaler = StandardScaler()
+
     for i in range(n_boot):
         X_boot, X_oob, y_boot, y_oob = bootstrap_resample(X_subset, y, rnd_engine=rnd)
 
-        scaler = StandardScaler()
+
         X_boot_std = scaler.fit_transform(X_boot)
         X_oob_std = scaler.transform(X_oob)
 
@@ -193,17 +224,110 @@ def evaluateBootstrap(X, y, model, feature_indices=None, n_boot=100, metric=f1_s
             print(confusion_matrix(y_oob, y_oob_pred))
 
     if verbose == 1: print()
-    return boot_scores, oob_scores
 
+    if boot_score:
+        return boot_scores, oob_scores
+    return oob_scores
+
+
+
+def evaluateBootstrapPE(
+        X, y, model, feature_indices=None, n_boot=100, metric=f1_score, use_proba=False, 
+        seed=None, boot_score=False, n_jobs=1
+):
+
+    if n_jobs==1:
+        n_each_part, n_remaining = 0, n_boot
+    elif n_jobs >= -1:
+        n_jobs = TOTAL_AVAIABLE_CPU if n_jobs==-1 else n_jobs
+        n_each_part = n_boot // n_jobs
+        n_remaining = n_boot % n_jobs
+    else:
+        raise ValueError(f"Invalid n_jobs={n_jobs}, must be >= -1.")
+    
+    
+    seed_arr = set_seed(seed).integers(0, 2**30, n_jobs+1)
+
+    results = []
+    if n_each_part != 0:
+        results = Parallel(n_jobs=n_jobs, backend="loky")(delayed(evaluateBootstrap)(
+            X, y, model, feature_indices=feature_indices, n_boot=n_each_part, 
+            metric=metric, use_proba=use_proba, seed=seed_arr[i], boot_score=boot_score
+        ) for i in range(n_jobs))
+
+    if n_remaining != 0:
+        res_remaining = evaluateBootstrap(
+            X, y, model, feature_indices=feature_indices, n_boot=n_remaining, 
+            metric=metric, use_proba=use_proba, seed=seed_arr[-1], boot_score=boot_score
+        )
+        results.append(res_remaining)
+    
+    if boot_score:
+        boot_arr, oob_arr = zip(*results)
+        return np.concatenate(boot_arr), np.concatenate(oob_arr)
+    
+    return np.concatenate(results)
+
+
+## ========================================================================
+## -------------------- RF evaluation ---------------------
+## ========================================================================
+def evaluateRF(
+    X, y, feature_index=None, params:dict=None, n_boot=20, 
+    seed=None, metric=f1_score, use_proba=False,
+    n_jobs=1, get_boot=False, verbose=0
+):
+    rnd = np.random.default_rng(seed)
+    seed_list = rnd.integers(0, 2**30, n_boot)
+
+    param_dict = {} if params is None else params.copy()
+    param_dict.update({'oob_score':True if use_proba else metric})
+
+    if feature_index is None:
+        X_subset = X
+    else:
+        X_subset = X[:, feature_index]
+    
+    boot_scores = np.zeros(n_boot)
+    oob_scores = np.zeros(n_boot)
+    for i, s in enumerate(seed_list):
+        rf_model = RandomForestClassifier(**param_dict, random_state=s, n_jobs=n_jobs)
+        rf_model.fit(X_subset, y)
+        
+        if use_proba:
+            y_pred_proba = rf_model.oob_decision_function_[:, 1]
+            y_pred_proba_boot = rf_model.predict_proba(X_subset)[:, 1]
+            oob_scores[i] = metric(y, y_pred_proba)
+            boot_scores[i] = metric(y, y_pred_proba_boot)
+        else:
+            y_pred = rf_model.predict(X_subset)
+            oob_scores[i] = rf_model.oob_score_
+            boot_scores[i] = metric(y, y_pred)
+            
+            
+        if verbose==1:
+            print(f'\rIteration - {i}', end='', flush=True)
+    
+    if verbose==1: print()
+
+    if get_boot:
+        return boot_scores, oob_scores
+    return oob_scores
 
 ## ========================================================================
 ## -------------------- LEAVE-ONE-OUT CROSSVALIDATION ---------------------
 ## ========================================================================
-def evaluateLOO(X, y, feature_indices, model, metric=f1_score, use_proba=False, verbose=0):
-    X_subset = X[:, feature_indices]
+def evaluateLOO(X, y, model, feature_indices=None, metric=f1_score, use_proba=False, verbose=0, train_score=False):
+    if feature_indices is None:
+        X_subset = X
+    else:
+        X_subset = X[:, feature_indices]
 
     loo = LeaveOneOut()
     y_true, y_pred = [], []
+
+    if train_score:
+        train_score_arr = []
     
     for i, (train_idx, test_idx) in enumerate(loo.split(X)):
 
@@ -221,8 +345,20 @@ def evaluateLOO(X, y, feature_indices, model, metric=f1_score, use_proba=False, 
         # Predict
         if use_proba:
             y_pred.append(model.predict_proba(X_test)[:, 1])
+            if train_score:
+                train_score_arr.append(metric(
+                    y_train, 
+                    model.predict_proba(X_train)[:, 1]
+                ))
+            
         else:
             y_pred.append(model.predict(X_test))
+            if train_score:
+                train_score_arr.append(metric(
+                    y_train, 
+                    model.predict(X_train)
+                ))
+            
 
     y_true = np.array(y_true).flatten()
     y_pred = np.array(y_pred).flatten()
@@ -237,6 +373,8 @@ def evaluateLOO(X, y, feature_indices, model, metric=f1_score, use_proba=False, 
     
     score = metric(y_true, y_pred)
 
+    if train_score:
+        return np.array(train_score_arr), score
     return score
 
 
