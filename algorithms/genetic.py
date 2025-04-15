@@ -98,7 +98,8 @@ class Agent:
         ## Bootstrap Score Collection
         if n_jobs == 1:
             boot_scores, oob_scores = rt.evaluateBootstrap(
-                X, y, model, feature_indices=self.chr, n_boot=100, seed=seed, metric=rt.pr_auc, use_proba=True
+                X, y, model, feature_indices=self.chr, n_boot=120, seed=4033355, metric=rt.pr_auc, use_proba=True,
+                boot_score = True
             )
         else:
             boot_scores, oob_scores = rt.evaluateBootstrapParallel(X, y, self.chr, model, n_boot=100, n_jobs=n_jobs)
@@ -106,17 +107,21 @@ class Agent:
         fn2 = oob_scores.mean() # mean score
         fn3 = math.exp(-k * oob_scores.var()) # variance score
 
+        ## overfitting penalty
+        # fn4 = fn2 * math.exp(-k2 * abs( fn2 - boot_scores.mean() ))
+
 
         self.frecord_ = {
             'f1' : round(fn1, 4),
             'f2' : round(fn2, 4),
             'f3' : round(fn3, 4),
+            # 'f4' : round(fn4, 4),
             'var_oob' : round(oob_scores.var(), 4),
             'mean_boot' : round(boot_scores.mean(), 4),
             'var_boot' : round(boot_scores.var(), 4)
         }
 
-        self.fitness_ = w1*fn1 + w2*fn2 + w3*fn3
+        self.fitness_ = w1*fn1 + w2*fn2 + w3*fn3 #+ w4*fn4
         return self.fitness_
 
 
@@ -146,7 +151,8 @@ class GeneticModel:
     def __init__(
             self, X, y, model, 
             X_test = None, y_test = None,
-            w1=0.5, w2=0.5, w3 = 0, kappa = 20,
+            w1=0.5, w2=0.5, w3 = 0, w4 = 0,
+            kappa = 20, k2 = 2,
             total_pop = 10, evolve_gen = 100, elite_factor = 0.1,
             elite_pop_var = 6,
             exploration_rate = 0.3, tounament_size = (3, 5),
@@ -164,7 +170,9 @@ class GeneticModel:
         self.w1 = w1
         self.w2 = w2
         self.w3 = w3
+        self.w4 = w4
         self.kappa = kappa
+        self.k2 = k2
         self.n_pop = total_pop
         self.n_jobs = n_jobs 
 
@@ -217,21 +225,24 @@ class GeneticModel:
         self.population_ = [Agent(self.n_features, rnd_engine=self.rnd_engine) for _ in range(self.n_pop)]
 
     def get_weights(self):
-        return self.w1, self.w2, self.w3
+        return self.w1, self.w2, self.w3, self.w4
 
     def fitness_evaluation(self):
         self.fitness_ = np.empty(self.n_pop, dtype=np.float64)
         self.best_local_pop_ = None
         self.best_local_score_ = -np.inf
 
-        w1, w2, w3 = self.get_weights()
+        w1, w2, w3, w4 = self.get_weights()
+
+        # seed_array = self.rnd_engine.integers(0, 2**30, self.n_pop)
+
         for i, pop in enumerate(self.population_):
             fitness_score = pop.calculate_boot_fitness(
                 self.X, self.y,
                 self.model,
                 self.kappa, w1, w2, w3,
                 self.n_jobs, 
-                seed=self.rnd_engine.integers(0, 2**30)
+                seed=1 #seed_array[i]
             )
             # fitness_score = pop.calculate_loo_fitnes(
             #     self.X, self.y,
@@ -343,9 +354,10 @@ class GeneticModel:
         return feature_vec
 
     def populate_next(self, verbose=0):
-        self.population_log.append(deepcopy(self.population_))
 
         self.fitness_evaluation()
+        self.population_log.append(deepcopy(self.population_))
+        
         self.pick_parents(verbose)
         self.evolve(verbose)
 
@@ -353,14 +365,13 @@ class GeneticModel:
         
 
         return self.best_local_pop_
-    
 
 
 
 
-    
 
-        
+
+
 
 
 ## =========================================================================================================
